@@ -1,14 +1,16 @@
 # HWStat
 
-header-only library for low-overhead performance counting on X86 platform.
+Header-only library for low-overhead performance counting on X86 platform.
 
 ## Getting started
 
 You'll need a C++17 compiler and `spdlog`.
 
-* On Ubuntu, `sudo apt install libspdlog-dev`
+* Install `spdlog`.
+  * Ubuntu/Debian: `sudo apt install libspdlog-dev`
+  * Or follow instructions [here](https://github.com/gabime/spdlog?tab=readme-ov-file#package-managers).
 * Copy `hwstat.h` to your own project.
-* Include it in your project.
+* Include the header in your cpp files.
 
 ## Usage
 
@@ -60,3 +62,9 @@ hwstat::print_stats(); // print all statistics
 hwstat::print_timer_stats();
 hwstat::print_counter_stats();
 ```
+
+## Implementation details
+
+Counter & timer values are stored in `thread_local` variables so performance is scalable. You may see noticeable performance degration if your library is dynamically linked(depending on how thread local storage is implemented by your compiler).
+
+Performance overhead is modest since `rdtsc` instruction is used to record time. Typical latency is 20~30 cycles on x86 platform(single-digit ns, ~50% lower than `clock_gettime`).
