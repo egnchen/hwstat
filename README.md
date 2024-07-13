@@ -45,6 +45,8 @@ sw.resume(); // resume the timer
 // ... do something time consuming ...
 sw.stop(); // stop & count as 1
 
+// NOTE. Nothing will be done when Stopwatch object get destructed,
+// so you have to call `stop` explicitly.
 
 // use the ScopedTimer API to record time
 // ScopedTimer utilizes RAII to record time, like std::lock_guard
