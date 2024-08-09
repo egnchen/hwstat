@@ -9,6 +9,7 @@ You'll need a C++17 compiler and `spdlog`.
 * Install `spdlog`.
   * Ubuntu/Debian: `sudo apt install libspdlog-dev`
   * Or follow instructions [here](https://github.com/gabime/spdlog?tab=readme-ov-file#package-managers).
+* Add `spdlog` to your project's dependency.
 * Copy `hwstat.h` to your own project.
 * Include the header in your cpp files.
 
@@ -58,11 +59,20 @@ using hwstat::ScopedTimer;
   // at the end of the scope the timer would stop & count as 1
 }
 
+// custom user stats takes a function(typically lambda) so that you
+// can include your own stats.
+STAT(myRate, []() {
+ auto num = testCounter.stat().cycles;
+ auto den = num + anotherCounter.stat().cycles;
+ return std::to_string(double(num) / den);
+})
+
 // print statistics
 hwstat::print_stats(); // print all statistics
 // or print them separately
 hwstat::print_timer_stats();
 hwstat::print_counter_stats();
+hwstat::print_user_stats();
 ```
 
 ## Implementation details
