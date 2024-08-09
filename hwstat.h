@@ -1,5 +1,5 @@
-#ifndef _RUNTIME_STAT_H
-#define _RUNTIME_STAT_H
+#ifndef _HWSTAT_H
+#define _HWSTAT_H
 
 #include <cassert>
 #include <chrono>
@@ -93,15 +93,56 @@ private:
   static inline std::mutex gMtx;
 };
 
+struct RdtscTimerFunc {
+  uint64_t operator()() {
+    uint64_t a, d;
+    asm volatile("rdtsc" : "=a"(a), "=d"(d));
+    return a | (d << 32);
+  }
+};
+
+struct RdtscpTimerFunc {
+  uint64_t operator()() {
+    uint64_t a, d;
+    asm volatile("rdtscp" : "=a"(a), "=d"(d));
+    return a | (d << 32);
+  }
+};
+
+static inline double measure_tsc_ghz(int sleep_ms = 10) {
+#ifdef NO_STAT
+  return 0.0;
+#endif
+#ifdef TSC_FREQ_GHZ
+  spdlog::info("predefined tsc frequency as {:.3}Ghz", TSC_FREQ_GHZ);
+  return TSC_FREQ_GHZ;
+#else
+  auto timer_func = RdtscTimerFunc{};
+  auto start_clk = std::chrono::high_resolution_clock::now();
+  unsigned long start = timer_func();
+  std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+  auto end_clk = std::chrono::high_resolution_clock::now();
+  unsigned long end = timer_func();
+  auto count_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_clk - start_clk).count();
+  auto ret = double(end - start) / count_ns;
+  spdlog::info("measured tsc frequency as {:.3}Ghz", ret);
+  return ret;
+#endif
+}
+
 struct TimerAgg {
   uint64_t cnt = 0;
   uint64_t cycles = 0;
+  static inline double kFreqGhz = measure_tsc_ghz();
+  double getNanos() const { return cycles / kFreqGhz; }
+  uint64_t getAvgCycles() const { return cycles / cnt; }
+  double getAvgNanos() const { return getNanos() / cnt; }
 };
 
 struct PerThreadTimer {
   using GlobalTimer = GlobalStat<PerThreadTimer>;
   using AggregateType = TimerAgg;
-  uint64_t cycle = 0;
+  uint64_t cycles = 0;
   uint64_t cnt = 0;
   GlobalTimer *global_timer;
   PerThreadTimer(GlobalTimer *globalTimer) : global_timer(globalTimer) { globalTimer->reg(this); }
@@ -109,12 +150,12 @@ struct PerThreadTimer {
   PerThreadTimer(PerThreadTimer &&) = delete;
   ~PerThreadTimer() { global_timer->dereg(this); }
   void add(uint64_t dc = 0) {
-    cycle += dc;
+    cycles += dc;
     cnt++;
   }
   AggregateType aggregate(AggregateType prev) {
     prev.cnt += cnt;
-    prev.cycles += cycle;
+    prev.cycles += cycles;
     return prev;
   }
   AggregateType stat() { return global_timer->calcStat(); }
@@ -174,23 +215,7 @@ using CounterType = NoopCounter;
 using TimerType = NoopTimer;
 #endif
 
-struct RdtscTimerFunc {
-  uint64_t operator()() {
-    uint64_t a, d;
-    asm volatile("rdtsc" : "=a"(a), "=d"(d));
-    return a | (d << 32);
-  }
-};
-
-struct RdtscpTimerFunc {
-  uint64_t operator()() {
-    uint64_t a, d;
-    asm volatile("rdtscp" : "=a"(a), "=d"(d));
-    return a | (d << 32);
-  }
-};
-
-template <typename TimerFunc>
+template <typename TimerFunc = RdtscTimerFunc>
 class StopwatchBase {
   TimerType &timer;
   TimerFunc timer_func;
@@ -198,7 +223,7 @@ class StopwatchBase {
   uint64_t agg = 0;
 
 public:
-  StopwatchBase(TimerType &timer) : timer(timer), timer_func(TimerFunc()) { restart(); }
+  StopwatchBase(TimerType &timer) : timer(timer), timer_func{} { restart(); }
   void pause() { agg += timer_func() - st; }
   void resume() { st = timer_func(); }
   void restart() { resume(); }
@@ -246,28 +271,14 @@ static inline std::string format_time(double nanos) {
   return fmt::format("{:.3}{}", nanos, units[idx]);
 }
 
-static inline double measureTscFreqGhz(int sleep_ms = 10) {
-#ifdef NO_STAT
-  return 0.0;
-#endif
-#ifdef TSC_FREQ_GHZ
-  spdlog::info("predefined tsc frequency as {:.3}Ghz", TSC_FREQ_GHZ);
-  return TSC_FREQ_GHZ;
-#else
-  auto timer_func = RdtscTimerFunc();
-  auto start_clk = std::chrono::high_resolution_clock::now();
-  unsigned long start = timer_func();
-  std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
-  auto end_clk = std::chrono::high_resolution_clock::now();
-  unsigned long end = timer_func();
-  auto count_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_clk - start_clk).count();
-  auto ret = double(end - start) / count_ns;
-  spdlog::info("measured tsc frequency as {:.3}Ghz", ret);
+template <typename T>
+static inline size_t get_max_strlen(const std::map<const char *, T *> &stats) {
+  size_t ret = 0;
+  for (const auto kv : stats) {
+    ret = std::max(ret, strlen(kv.first));
+  }
   return ret;
-#endif
 }
-
-inline double kFreqGhz = measureTscFreqGhz();
 
 template <>
 inline void GlobalStat<PerThreadTimer>::printStats() {
@@ -275,15 +286,16 @@ inline void GlobalStat<PerThreadTimer>::printStats() {
     spdlog::info("NO TIMERS");
     return;
   }
-  spdlog::info("======TIMERS(freq = {:.3}Ghz)======", kFreqGhz);
-  spdlog::info("{:<16}TIME\tCOUNT\tAVERAGE\t\tDESCRIPTION", "NAME");
+  auto l = std::max(8UL, get_max_strlen(stats) + 2);
+  spdlog::info("======TIMERS(freq = {:.3}Ghz)======", TimerAgg::kFreqGhz);
+  spdlog::info("{:<{}}TIME\tCOUNT\tAVERAGE\t\tDESCRIPTION", "NAME", l);
   for (const auto kv : stats) {
     auto timer = kv.second;
     auto agg = timer->calcStat();
-    auto tot_nanos = agg.cycles / kFreqGhz;
-    auto avg_nanos = agg.cycles == 0 ? "N/A" : format_time(tot_nanos / agg.cnt);
-    auto avg_cycles = agg.cycles == 0 ? "N/A" : std::to_string(agg.cycles / agg.cnt);
-    spdlog::info("{:<16}{}\t{}\t{}({} cycles)\t{}", timer->name, format_time(tot_nanos), agg.cnt,
+    auto tot_nanos = agg.getNanos();
+    auto avg_nanos = agg.cycles == 0 ? "N/A" : format_time(agg.getAvgNanos());
+    auto avg_cycles = agg.cycles == 0 ? "N/A" : std::to_string(agg.getAvgCycles());
+    spdlog::info("{:<{}}{}\t{}\t{}({} cycles)\t{}", timer->name, l, format_time(tot_nanos), agg.cnt,
                  avg_nanos, avg_cycles, timer->desc);
   }
 }
@@ -294,11 +306,12 @@ inline void GlobalStat<PerThreadCounter>::printStats() {
     spdlog::info("NO COUNTERS");
     return;
   }
+  auto l = std::max(8UL, get_max_strlen(stats) + 2);
   spdlog::info("======COUNTERS======");
-  spdlog::info("{:<16}\tCOUNT\tDESCRIPTION", "NAME");
+  spdlog::info("{:<{}}\tCOUNT\tDESCRIPTION", "NAME", l);
   for (const auto &kv : stats) {
     auto counter = kv.second;
-    spdlog::info("{:<16}{}\t{}", counter->name, counter->calcStat(), counter->desc);
+    spdlog::info("{:<{}}{}\t{}", counter->name, l, counter->calcStat(), counter->desc);
   }
 }
 
@@ -313,11 +326,12 @@ inline void SimpleStat::printStats() {
     spdlog::info("NO USER STATS");
     return;
   }
+  auto l = std::max(8UL, get_max_strlen(stats) + 2);
   spdlog::info("======USER STATS======");
-  spdlog::info("{:<16}\tVALUE\tDESCRIPTION", "NAME");
+  spdlog::info("{:<{}}\tVALUE\tDESCRIPTION", "NAME", l);
   for (const auto &kv : stats) {
     auto val = kv.second->callback();
-    spdlog::info("{:<16}{}\t{}", kv.first, val, kv.second->desc);
+    spdlog::info("{:<{}}{}\t{}", kv.first, l, val, kv.second->desc);
   }
 }
 
@@ -367,4 +381,5 @@ inline void print_stats() {
 #define TIMER(...) _GET_MACRO_3(__VA_ARGS__, _TIMER_3, _TIMER_2, _TIMER_1)(__VA_ARGS__)
 #define COUNTER(...) _GET_MACRO_3(__VA_ARGS__, _COUNTER_3, _COUNTER_2, _COUNTER_1)(__VA_ARGS__)
 #define STAT(...) _GET_MACRO_4(__VA_ARGS__, _STAT_4, _STAT_3, _STAT_2, _STAT_1)(__VA_ARGS__)
-#endif
+
+#endif // _HWSTAT_H
