@@ -19,7 +19,10 @@ You'll need a C++17 compiler and `spdlog`.
 // define a counter
 COUNTER(testCounter)
 COUNTER(anotherCounter, "description for the counter")
-COUNTER(staticCounter, "this will add 'static' before the counter variable definition", static)
+COUNTER(staticCounter, "this will add 'static' before the counter variable definition, "
+                       "which is the default behavior", static)
+COUNTER(globalCounter, "this will remove the 'static' before definition so that you can "
+                       "reference it anywhere", )
 
 testCounter++; // add to a counter
 testCounter += 2; // add twice
@@ -27,7 +30,7 @@ testCounter += 2; // add twice
 // define a timer the same way as counter
 TIMER(testTimer)
 TIMER(testTimer, "description for the timer")
-TIMER(testTimer, "static timer", static)
+TIMER(testTimer, "global timer", )
 
 // use the Stopwatch API to record time
 using hwstat::Stopwatch;
